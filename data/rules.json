@@ -1,0 +1,41 @@
+{
+  "version": "1",
+  "disclaimer": "Decision-support rules only. Not legal advice. Each rule must be confirmed against its source before the app uses it.",
+  "rules": [
+    {
+      "id": "R1",
+      "text": "The waiting period for pre-existing diseases can be at most 36 months (3 years).",
+      "source_name": "IRDAI Master Circular on Health Insurance Business",
+      "source_ref": "Dated 29 May 2024, effective 1 April 2024. Confirm section number for pre-existing disease waiting period.",
+      "verified": false
+    },
+    {
+      "id": "R2",
+      "text": "After 60 months (5 years) of continuous coverage, the insurer cannot reject a claim for non-disclosure or misrepresentation. Exception: proven fraud. Applies to policies issued or renewed on or after 1 April 2024.",
+      "source_name": "IRDAI Master Circular on Health Insurance Business",
+      "source_ref": "Dated 29 May 2024, effective 1 April 2024. Confirm section number for moratorium period.",
+      "verified": false
+    },
+    {
+      "id": "R3",
+      "text": "Exclusions clearly written in the policy as permanent exclusions can be valid grounds for rejection.",
+      "source_name": "Policy wording (applies to each policy individually)",
+      "source_ref": "Checked against the uploaded policy, not an external rule. Verify the policy's exclusion clause itself.",
+      "verified": true
+    },
+    {
+      "id": "R4",
+      "text": "Before approaching the Insurance Ombudsman, the policyholder must first make a written complaint to the insurer. The Ombudsman can be approached if the insurer rejects the complaint, does not reply within 30 days, or the policyholder is not satisfied.",
+      "source_name": "Insurance Ombudsman Rules 2017",
+      "source_ref": "Rule 14. Confirm sub-clause against the official text at cioins.co.in.",
+      "verified": false
+    },
+    {
+      "id": "R5",
+      "text": "An Ombudsman complaint must be filed within 1 year of the insurer's rejection of the complaint. Claim value limit is up to Rs 50 lakh. Awards must be complied with within 30 days.",
+      "source_name": "Insurance Ombudsman Rules 2017",
+      "source_ref": "Confirm rule number and the Rs 50 lakh limit against the official text at cioins.co.in.",
+      "verified": false
+    }
+  ]
+}
