@@ -1,64 +1,84 @@
-"""Strength score: plain code, never AI. Input is verified verdicts from verify.py."""
+"""Assessment status: plain code, never AI. Input is verified verdicts from verify.py.
+
+No numeric score. No confidence percentage. Status is derived only from evidence
+that passed verification. A claim is never 'contradicted' or 'supported' on an
+unverified quote.
+"""
 from __future__ import annotations
 
 from typing import Any
 
-POINTS = {
-    "rejection_contradicted": 100,
-    "unclear": 40,
-    "rejection_supported": 0,
-}
-WEAK_CAP = 20  # applied when the only reason is rejection_supported
-LABELS = ((70, "Strong"), (40, "Medium"), (0, "Weak"))
-WEAK_MESSAGE = (
-    "Based on your policy, this rejection looks valid. "
-    "You may still ask the insurer for a review."
-)
+STATUS_SUPPORTED = "Not supported by policy"      # insurer's rejection contradicts the policy
+STATUS_REJECTION_VALID = "Supported by policy"    # policy supports the insurer's rejection
+STATUS_INSUFFICIENT = "Insufficient information"  # not enough verified evidence to decide
 
 
-def _label(score: int) -> str:
-    for threshold, label in LABELS:
-        if score >= threshold:
-            return label
-    return "Weak"
+def _effective_verdict(item: dict[str, Any]) -> str:
+    """A verdict only counts if its quote is verified. Otherwise it is 'unclear'."""
+    verdict = item.get("verdict", "unclear")
+    if verdict in {"rejection_contradicted", "rejection_supported"} and not item.get("quote_verified"):
+        return "unclear"
+    if verdict not in {"rejection_contradicted", "rejection_supported", "unclear"}:
+        return "unclear"
+    return verdict
+
+
+def _status_from_verdicts(effective: list[str]) -> str:
+    if not effective:
+        return STATUS_INSUFFICIENT
+    contradicted = sum(1 for v in effective if v == "rejection_contradicted")
+    supported = sum(1 for v in effective if v == "rejection_supported")
+    total = len(effective)
+
+    # Every reason contradicted, all verified -> claim not supported by the policy.
+    if contradicted == total:
+        return STATUS_SUPPORTED
+    # Every reason supported, all verified -> rejection looks valid.
+    if supported == total:
+        return STATUS_REJECTION_VALID
+    # Any unresolved reason -> we do not have enough to commit.
+    if contradicted < total and supported < total:
+        return STATUS_INSUFFICIENT
+    # Mixed contradicted and supported with no unclear: still insufficient to commit
+    # to a single overall label; the user must read the per-reason lines.
+    return STATUS_INSUFFICIENT
 
 
 def score_claim(verdicts: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return score, label, per-reason lines, and the honesty message if Weak.
+    """Return per-reason lines and one overall status.
 
-    Each verdict needs: reason_id, verdict. Verdicts must already pass verify.py.
+    Each verdict needs at least: reason_id, verdict. quote_verified is read if present;
+    a verdict without verified quote counts as unclear for scoring.
     """
     if not verdicts:
         return {
-            "score": 0,
-            "label": "Weak",
+            "status": STATUS_INSUFFICIENT,
             "reasons": [],
-            "message": "No rejection reasons were found, so no strength score is available.",
+            "message": "No rejection reasons were found, so no assessment is available.",
         }
 
     per_reason = []
     for item in verdicts:
-        verdict = item.get("verdict", "unclear")
-        points = POINTS.get(verdict, POINTS["unclear"])
+        effective = _effective_verdict(item)
         per_reason.append({
             "reason_id": item.get("reason_id"),
-            "verdict": verdict,
-            "points": points,
+            "verdict": effective,
+            "raw_verdict": item.get("verdict", "unclear"),
+            "quote_verified": bool(item.get("quote_verified")),
             "explanation": item.get("explanation", ""),
         })
 
-    score = round(sum(r["points"] for r in per_reason) / len(per_reason))
+    status = _status_from_verdicts([r["verdict"] for r in per_reason])
 
-    only_one = len(per_reason) == 1
-    if only_one and per_reason[0]["verdict"] == "rejection_supported":
-        score = min(score, WEAK_CAP)
-
-    label = _label(score)
-    message = WEAK_MESSAGE if label == "Weak" else ""
+    message = ""
+    if status == STATUS_REJECTION_VALID:
+        message = (
+            "Based on the uploaded policy, this rejection appears valid. "
+            "You may still ask the insurer for a written review."
+        )
 
     return {
-        "score": score,
-        "label": label,
+        "status": status,
         "reasons": per_reason,
         "message": message,
     }

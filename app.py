@@ -14,12 +14,17 @@ from pipeline.score import score_claim
 
 ROOT = Path(__file__).resolve().parent
 CASES_DIR = ROOT / "data" / "cases"
-LABEL_COLOURS = {"Strong": "green", "Medium": "orange", "Weak": "red"}
+STATUS_COLOURS = {
+    "Not supported by policy": "green",
+    "Supported by policy": "red",
+    "Insufficient information": "orange",
+}
 BADGE = {
     "rejection_contradicted": ("Contradicted by policy", "green"),
     "unclear": ("Unclear", "orange"),
     "rejection_supported": ("Supported by policy", "red"),
 }
+EMPTY_APPEAL = {"letter": "", "pdf_bytes": b"", "checklist": [], "evidence_count": 0}
 
 st.set_page_config(page_title="ClaimCourt", layout="wide")
 
@@ -35,7 +40,12 @@ def demo_cases() -> dict[str, tuple[Path, Path]]:
 
 
 def run_pipeline(policy_bytes: bytes, letter_bytes: bytes, details: dict[str, str]) -> dict:
-    """Run every stage. Returns the state dict stored in session_state."""
+    """Run every stage. Returns the state dict stored in session_state.
+
+    Appeal generation is best-effort: if it fails (no verified evidence, AI error,
+    PDF error), we keep the analysis and store an empty appeal so the results
+    section still renders. The whole point of the app is the analysis, not the letter.
+    """
     with st.status("Working...", expanded=True) as status:
         status.write("Reading documents...")
         policy = extract_pdf(policy_bytes, name="policy.pdf")
@@ -52,7 +62,10 @@ def run_pipeline(policy_bytes: bytes, letter_bytes: bytes, details: dict[str, st
 
         status.write("Scoring and writing appeal...")
         score = score_claim(verdicts)
-        appeal = generate_appeal(reasons, verdicts, details)
+        try:
+            appeal = generate_appeal(reasons, verdicts, details)
+        except AppealError:
+            appeal = dict(EMPTY_APPEAL)
 
         status.update(label="Done", state="complete", expanded=False)
 
@@ -67,19 +80,19 @@ def run_pipeline(policy_bytes: bytes, letter_bytes: bytes, details: dict[str, st
 
 def render_results(state: dict) -> None:
     score = state["score"]
-    colour = LABEL_COLOURS[score["label"]]
+    status = score["status"]
+    colour = STATUS_COLOURS.get(status, "orange")
 
-    st.subheader("Appeal strength")
-    st.markdown(f"### :{colour}[{score['label']}]  ·  {score['score']} / 100")
+    st.subheader("Assessment")
+    st.markdown(f"### :{colour}[{status}]")
     if state["claim_type"]:
         st.caption(f"Claim type: {state['claim_type']}")
     for line in score["reasons"]:
         st.write(f"- Reason {line['reason_id']}: {line['explanation'] or line['verdict']}")
-    if score["message"]:
+    if score.get("message"):
         st.warning(score["message"])
 
     st.subheader("Reasons and evidence")
-    reasons_by_id = {r["reason_id"]: r for r in state["reasons"]}
     for v in state["verdicts"]:
         reason = next((r for r in state["reasons"] if r["id"] == v["reason_id"]), None)
         if reason is None:
@@ -111,17 +124,19 @@ def render_results(state: dict) -> None:
 
     st.subheader("Next steps")
     appeal = state["appeal"]
-    if appeal["evidence_count"] == 0:
+    has_appeal = bool(appeal.get("pdf_bytes")) and bool(appeal.get("letter"))
+    if not has_appeal:
         st.info("No verified evidence supports an appeal. Follow the steps below to escalate if needed.")
-    st.download_button(
-        "Download appeal letter (PDF)",
-        data=appeal["pdf_bytes"],
-        file_name="claimcourt_appeal.pdf",
-        mime="application/pdf",
-    )
-    with st.expander("Appeal letter text"):
-        st.text(appeal["letter"])
-    for step in appeal["checklist"]:
+    else:
+        st.download_button(
+            "Download appeal letter (PDF)",
+            data=appeal["pdf_bytes"],
+            file_name="claimcourt_appeal.pdf",
+            mime="application/pdf",
+        )
+        with st.expander("Appeal letter text"):
+            st.text(appeal["letter"])
+    for step in appeal.get("checklist", []):
         st.checkbox(step, key=f"step_{hash(step)}")
 
 
