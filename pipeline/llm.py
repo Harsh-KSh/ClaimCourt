@@ -17,11 +17,13 @@ load_dotenv()
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE_DIR = ROOT / "data" / "cache"
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")  # confirm name in AI Studio
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 OFFLINE = os.getenv("CLAIMCOURT_OFFLINE", "0") == "1"
-MIN_INTERVAL_S = float(os.getenv("GEMINI_MIN_INTERVAL_S", "7"))  # keeps you under free-tier RPM
+MIN_INTERVAL_S = float(os.getenv("GEMINI_MIN_INTERVAL_S", "7"))
 MAX_ATTEMPTS = 4
-RETRYABLE_CODES = {429, 500, 503, 504}
+RETRYABLE_CODES = {429, 500, 502, 503, 504}
+# Transient network failures: retryable regardless of HTTP status.
+RETRYABLE_EXC = (ConnectionError, TimeoutError, OSError)
 
 _client: genai.Client | None = None
 _last_call_at = 0.0
@@ -59,6 +61,13 @@ def _parse_json(text: str) -> Any:
     return json.loads(cleaned)
 
 
+def _is_retryable(exc: Exception) -> bool:
+    """Transient network errors are always retryable. SDK/HTTP errors depend on their code."""
+    if isinstance(exc, RETRYABLE_EXC):
+        return True
+    return getattr(exc, "code", None) in RETRYABLE_CODES
+
+
 def ask_json(system: str, prompt: str, *, use_cache: bool = True) -> dict[str, Any]:
     """Send one prompt and return the parsed JSON object.
 
@@ -88,9 +97,10 @@ def ask_json(system: str, prompt: str, *, use_cache: bool = True) -> dict[str, A
             if not isinstance(data, dict):
                 raise ValueError("Top-level JSON must be an object.")
         except (json.JSONDecodeError, ValueError) as exc:
-            last_error = exc  # invalid output: retry
-        except Exception as exc:  # SDK errors carry an HTTP-style .code
-            if getattr(exc, "code", None) not in RETRYABLE_CODES:
+            # AI returned malformed output: retry.
+            last_error = exc
+        except Exception as exc:
+            if not _is_retryable(exc):
                 raise LLMError(f"Gemini call failed: {exc}") from exc
             last_error = exc
         else:

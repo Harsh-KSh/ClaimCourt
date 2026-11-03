@@ -10,6 +10,7 @@ from pipeline.extract import ExtractError, extract_pdf
 from pipeline.llm import LLMError
 from pipeline.match import judge_reasons
 from pipeline.reasons import extract_reasons
+from pipeline.report import build_report_pdf
 from pipeline.score import score_claim
 
 ROOT = Path(__file__).resolve().parent
@@ -39,12 +40,16 @@ def demo_cases() -> dict[str, tuple[Path, Path]]:
     return cases
 
 
+def _tick(ok: bool, yes: str, no: str) -> str:
+    return f":green[✓ {yes}]" if ok else f":red[✗ {no}]"
+
+
 def run_pipeline(policy_bytes: bytes, letter_bytes: bytes, details: dict[str, str]) -> dict:
     """Run every stage. Returns the state dict stored in session_state.
 
     Appeal generation is best-effort: if it fails (no verified evidence, AI error,
     PDF error), we keep the analysis and store an empty appeal so the results
-    section still renders. The whole point of the app is the analysis, not the letter.
+    section still renders.
     """
     with st.status("Working...", expanded=True) as status:
         status.write("Reading documents...")
@@ -63,7 +68,7 @@ def run_pipeline(policy_bytes: bytes, letter_bytes: bytes, details: dict[str, st
         status.write("Scoring and writing appeal...")
         score = score_claim(verdicts)
         try:
-            appeal = generate_appeal(reasons, verdicts, details)
+            appeal = generate_appeal(reasons, verdicts, details, letter_text=letter.full_text)
         except AppealError:
             appeal = dict(EMPTY_APPEAL)
 
@@ -75,7 +80,65 @@ def run_pipeline(policy_bytes: bytes, letter_bytes: bytes, details: dict[str, st
         "verdicts": verdicts,
         "score": score,
         "appeal": appeal,
+        "details": details,
+        "letter_pages": [{"number": p.number, "text": p.text} for p in letter.pages],
+        "policy_pages": [{"number": p.number, "text": p.text} for p in policy.pages],
     }
+
+
+def _render_trust_panel(reason: dict, verdict: dict) -> None:
+    """Four ticks per reason: insurer quote, policy quote, clause, rule."""
+    insurer_ok = bool(reason.get("insurer_words_verified"))
+    quote_ok = bool(verdict.get("quote_verified"))
+    clause_claimed = verdict.get("clause")
+    clause_ok = bool(verdict.get("clause_verified")) if clause_claimed else None
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown("**Insurer quote**")
+        st.markdown(_tick(insurer_ok, "verbatim in letter", "not verified"))
+    with c2:
+        st.markdown("**Policy quote**")
+        st.markdown(_tick(quote_ok, "verbatim in policy", "not verified"))
+    with c3:
+        st.markdown("**Clause**")
+        if clause_claimed is None:
+            st.markdown(":gray[— none claimed]")
+        else:
+            st.markdown(_tick(clause_ok, "verified near quote", "not near quote"))
+    with c4:
+        st.markdown("**IRDAI rule**")
+        st.markdown(":gray[— not in scope]")
+
+
+def _render_audit_trail(reason: dict, verdict: dict, policy_pages: list[dict]) -> None:
+    """Plain-text receipt of how the verdict was reached."""
+    lines = []
+    lines.append(f"Extracted reason id={reason.get('id')} category={reason.get('category')}")
+    lines.append(f"  insurer_words: {reason.get('insurer_words', '')!r}")
+    lines.append(f"  insurer_words_verified: {reason.get('insurer_words_verified')}")
+
+    q = verdict.get("policy_quote") or ""
+    lines.append(f"policy_quote: {q!r}")
+    lines.append(f"  quote_verified: {verdict.get('quote_verified')}")
+    lines.append(f"  quote_check: {verdict.get('quote_check')}")
+    lines.append(f"  quote_page: {verdict.get('quote_page')}")
+    lines.append(f"  quote_position: {verdict.get('quote_position')}")
+
+    lines.append(f"clause: {verdict.get('clause')!r}")
+    lines.append(f"  clause_verified: {verdict.get('clause_verified')}")
+    lines.append(f"  clause_check: {verdict.get('clause_check')}")
+
+    lines.append(f"raw AI verdict: {verdict.get('verdict')}")
+    lines.append(f"explanation: {verdict.get('explanation', '')}")
+
+    facts = verdict.get("facts_needed_from_user") or []
+    if facts:
+        lines.append("facts_needed_from_user:")
+        for f in facts:
+            lines.append(f"  - {f}")
+
+    st.code("\n".join(lines), language="text")
 
 
 def render_results(state: dict) -> None:
@@ -93,6 +156,7 @@ def render_results(state: dict) -> None:
         st.warning(score["message"])
 
     st.subheader("Reasons and evidence")
+    policy_pages = state.get("policy_pages", [])
     for v in state["verdicts"]:
         reason = next((r for r in state["reasons"] if r["id"] == v["reason_id"]), None)
         if reason is None:
@@ -103,12 +167,21 @@ def render_results(state: dict) -> None:
             with left:
                 st.markdown("**What the insurer said**")
                 st.write(reason["insurer_words"] or "(no direct quote)")
+                if not reason.get("insurer_words_verified") and reason["insurer_words"]:
+                    st.caption(":red[Insurer wording could not be verified against the letter.]")
                 st.caption(reason["plain_english"])
             with right:
                 st.markdown("**Policy wording**")
                 if v.get("policy_quote"):
                     st.write(f"\u201c{v['policy_quote']}\u201d")
-                    st.caption(f"Page {v.get('quote_page') or v.get('page') or '?'}")
+                    page = v.get("quote_page") or v.get("page") or "?"
+                    clause = v.get("clause")
+                    if clause and v.get("clause_verified"):
+                        st.caption(f"Page {page} · Clause {clause}")
+                    elif clause:
+                        st.caption(f"Page {page} · Clause claimed: {clause} (not verified)")
+                    else:
+                        st.caption(f"Page {page}")
                 else:
                     st.write("No policy wording found.")
                 st.markdown(f":{badge_colour}[{label}]")
@@ -122,12 +195,29 @@ def render_results(state: dict) -> None:
             if v.get("facts_needed_from_user"):
                 st.info("Needed to decide: " + "; ".join(v["facts_needed_from_user"]))
 
+            st.markdown("**Trust checks**")
+            _render_trust_panel(reason, v)
+
+            with st.expander("How we reached this"):
+                _render_audit_trail(reason, v, policy_pages)
+
     st.subheader("Next steps")
     appeal = state["appeal"]
     has_appeal = bool(appeal.get("pdf_bytes")) and bool(appeal.get("letter"))
+
+    try:
+        report_bytes = build_report_pdf(state)
+    except Exception:
+        report_bytes = b""
+
     if not has_appeal:
-        st.info("No verified evidence supports an appeal. Follow the steps below to escalate if needed.")
+        st.info("No verified evidence supports an appeal. The assessment above still stands.")
     else:
+        if appeal.get("insurer_quote_check") == "not_found_removed":
+            st.warning(
+                "The AI's quotation of the insurer's wording did not match the rejection letter, "
+                "so that block was removed from the appeal letter."
+            )
         st.download_button(
             "Download appeal letter (PDF)",
             data=appeal["pdf_bytes"],
@@ -136,6 +226,16 @@ def render_results(state: dict) -> None:
         )
         with st.expander("Appeal letter text"):
             st.text(appeal["letter"])
+
+    if report_bytes:
+        st.download_button(
+            "Download evidence report (PDF)",
+            data=report_bytes,
+            file_name="claimcourt_evidence_report.pdf",
+            mime="application/pdf",
+        )
+        st.caption("Full check-by-check receipt for the assessment above. Not legal advice.")
+
     for step in appeal.get("checklist", []):
         st.checkbox(step, key=f"step_{hash(step)}")
 
@@ -166,7 +266,7 @@ def main() -> None:
 
     if analyse:
         try:
-            if choice != "(none)":
+            if choice != "(none)" and not (policy_file and letter_file):
                 policy_path, letter_path = cases[choice]
                 policy_bytes, letter_bytes = policy_path.read_bytes(), letter_path.read_bytes()
             elif policy_file and letter_file:
