@@ -3,3 +3,4 @@ pdfplumber>=0.11
 google-genai>=1.0
 python-dotenv>=1.0
 fpdf2>=2.8
+numpy>=1.26
