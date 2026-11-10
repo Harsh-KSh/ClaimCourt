@@ -1,13 +1,4 @@
-"""Quote checker: confirms every AI-quoted policy sentence appears word-for-word in the source PDF.
-
-Strict: only harmless formatting differences are ignored (case, punctuation, line breaks,
-ligatures). No fuzzy matching. A quote that is not found is never treated as evidence.
-
-Clause numbers are verified positionally: the claimed clause (e.g. "3.7A") must appear
-within CLAUSE_WINDOW_CHARS characters before the quote on the same page. A clause that
-merely appears somewhere on the page is not accepted. This prevents a hallucinated clause
-from riding along with a real quote from a different clause on the same page.
-"""
+"""Quote checker: confirms every AI-quoted policy sentence appears word-for-word in the source PDF."""
 from __future__ import annotations
 
 import re
@@ -34,14 +25,10 @@ class QuoteCheck:
     page: int | None
     score: float
     reason: str
-    position: int | None  # character offset of the quote in the normalized page, else None
+    position: int | None
 
 
 def normalize(text: str) -> str:
-    """Fold harmless formatting differences into single-spaced lowercase words.
-
-    Does not change word order, words, or digit sequences. "136" stays different from "36".
-    """
     text = unicodedata.normalize("NFKC", text)
     text = text.lower()
     for src, dst in _QUOTE_MARKS.items():
@@ -50,7 +37,6 @@ def normalize(text: str) -> str:
 
 
 def _find_word_run(haystack: list[str], needle: list[str]) -> int | None:
-    """Return start index of `needle` as a whole, consecutive run of words, else None."""
     n = len(needle)
     if n == 0 or n > len(haystack):
         return None
@@ -62,10 +48,6 @@ def _find_word_run(haystack: list[str], needle: list[str]) -> int | None:
 
 
 def verify_quote(quote: str, pages: Iterable[Page]) -> QuoteCheck:
-    """Find `quote` as an exact word sequence on a single policy page.
-
-    Quotes that span two pages are reported as not found.
-    """
     if not isinstance(quote, str):
         return QuoteCheck(False, None, 0.0, "no_quote", None)
     needle = normalize(quote).split()
@@ -89,10 +71,6 @@ def verify_quote(quote: str, pages: Iterable[Page]) -> QuoteCheck:
 
 
 def _clause_near_quote(clause: str, page_text: str, quote_word_idx: int | None) -> bool:
-    """True if the clause token appears within CLAUSE_WINDOW_CHARS chars before the quote.
-
-    Compares on the normalized page text so "3.7 A" matches "3.7A".
-    """
     if quote_word_idx is None:
         return False
     c = normalize(clause).replace(" ", "")
@@ -102,7 +80,6 @@ def _clause_near_quote(clause: str, page_text: str, quote_word_idx: int | None) 
     norm_words = norm_page.split()
     if quote_word_idx > len(norm_words):
         return False
-    # Character offset of the quote start, in the normalized page text.
     quote_char = len(" ".join(norm_words[:quote_word_idx]))
     window_start = max(0, quote_char - CLAUSE_WINDOW_CHARS)
     window = norm_page[window_start:quote_char]
@@ -111,12 +88,6 @@ def _clause_near_quote(clause: str, page_text: str, quote_word_idx: int | None) 
 
 
 def apply_verification(verdicts: list[dict[str, Any]], pages: list[Page]) -> list[dict[str, Any]]:
-    """Check each verdict's quote and clause. Downgrade and flag any that fail.
-
-    Adds: quote_verified, quote_page, quote_score, quote_check, quote_position,
-          clause_verified, clause_check.
-    Returns new dicts; input is not mutated.
-    """
     page_by_number = {p.number: p for p in pages}
     checked: list[dict[str, Any]] = []
 

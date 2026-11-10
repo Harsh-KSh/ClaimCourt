@@ -1,11 +1,9 @@
 """Regulatory knowledge base: extract sections from IRDAI/Ombudsman PDFs, embed, retrieve.
 
-Phase 1 (this file): extraction + index building + retrieval primitives.
-Phase 2 (later steps): wiring into match.py / verify.py / app.py.
+Phase 1: extraction + index building + retrieval primitives.
+Phase 2: wiring into match.py / verify.py / app.py.
 
 Embeddings: one section per call, one shared SDK client, checkpoint every 5 sections.
-The shared client mirrors pipeline/llm.py — creating a new genai.Client per call is
-known to fail intermittently with 'client has been closed' on some google-genai builds.
 """
 from __future__ import annotations
 
@@ -14,7 +12,9 @@ import json
 import os
 import re
 import time
+import urllib.request
 from dataclasses import dataclass, asdict
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +30,11 @@ REG_DIR = ROOT / "data" / "regulations"
 INDEX_PATH = REG_DIR / "index.npz"
 PARTIAL_PATH = REG_DIR / "index.partial.npz"
 EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-2")
+
+# ---------------------------------------------------------
+# REPLACE THIS URL WITH YOUR GITHUB RELEASE URL
+# ---------------------------------------------------------
+INDEX_URL = "https://github.com/Harsh-KSh/ClaimCourt/releases/download/v1.0.0/index.npz"
 
 MIN_SECTION_CHARS = 80
 MAX_SECTION_CHARS = 3000
@@ -184,7 +189,6 @@ def _embed_with_retry(section: Section) -> np.ndarray:
                 continue
             raise
         except RuntimeError as exc:
-            # Transient SDK/transport errors: reset the shared client and retry.
             msg = str(exc).lower()
             if any(w in msg for w in ("closed", "connection", "timeout", "transport")):
                 print(
@@ -202,7 +206,6 @@ def _embed_with_retry(section: Section) -> np.ndarray:
 
 
 def _probe_client() -> None:
-    """One tiny embedding to confirm the SDK + transport works before the long loop."""
     print("[probe] testing embedding client...")
     try:
         probe = Section(source_name="probe", section_id="probe", page=0, text="health insurance")
@@ -211,7 +214,7 @@ def _probe_client() -> None:
     except Exception as exc:
         print(f"[probe] FAILED: {type(exc).__name__}: {exc}")
         print("  If this is 'client has been closed' or similar, try in the venv:")
-        print("    pip install --upgrade google-genai httpx")
+        print("    pip install --upgrade --force-reinstall google-genai httpx")
         print("  Then re-run. If it persists, the SDK version is incompatible with this Python.")
         raise
 
@@ -329,8 +332,31 @@ def build_index() -> None:
     print(f"[done] wrote {INDEX_PATH} ({vectors.shape[0]} vectors, {vectors.shape[1]} dim)")
 
 
+# ---------- retrieval ----------
+
+@lru_cache(maxsize=1)
+def ensure_index() -> None:
+    """Downloads the index from GitHub Releases if it does not exist locally.
+    Cached so it only ever runs once per Python process."""
+    if INDEX_PATH.exists():
+        return
+    if not INDEX_URL or "YOUR_USERNAME" in INDEX_URL:
+        raise RuntimeError(
+            "Please replace INDEX_URL in pipeline/reg_rules.py with your GitHub Release URL."
+        )
+    print(f"[download] fetching index from {INDEX_URL}")
+    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        urllib.request.urlretrieve(INDEX_URL, INDEX_PATH)
+        print("[download] success")
+    except Exception as exc:
+        raise RuntimeError(f"Failed to download index from {INDEX_URL}: {exc}")
+
+
 def load_index(path: Path | None = None) -> tuple[np.ndarray, list[Section]]:
-    path = path or INDEX_PATH
+    if path is None:
+        ensure_index()
+        path = INDEX_PATH
     if not path.exists():
         raise RuntimeError(f"Index not found: {path}. Run `python -m pipeline.reg_rules` first.")
     data = np.load(path, allow_pickle=False)

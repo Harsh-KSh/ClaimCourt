@@ -31,7 +31,6 @@ st.set_page_config(page_title="ClaimCourt", layout="wide")
 
 
 def demo_cases() -> dict[str, tuple[Path, Path]]:
-    """Pair case_X_policy.pdf with case_X_letter.pdf."""
     cases = {}
     for letter in sorted(CASES_DIR.glob("*_letter.pdf")):
         policy = letter.with_name(letter.name.replace("_letter.pdf", "_policy.pdf"))
@@ -45,12 +44,6 @@ def _tick(ok: bool, yes: str, no: str) -> str:
 
 
 def run_pipeline(policy_bytes: bytes, letter_bytes: bytes, details: dict[str, str]) -> dict:
-    """Run every stage. Returns the state dict stored in session_state.
-
-    Appeal generation is best-effort: if it fails (no verified evidence, AI error,
-    PDF error), we keep the analysis and store an empty appeal so the results
-    section still renders.
-    """
     with st.status("Working...", expanded=True) as status:
         status.write("Reading documents...")
         policy = extract_pdf(policy_bytes, name="policy.pdf")
@@ -87,7 +80,6 @@ def run_pipeline(policy_bytes: bytes, letter_bytes: bytes, details: dict[str, st
 
 
 def _render_trust_panel(reason: dict, verdict: dict) -> None:
-    """Four ticks per reason: insurer quote, policy quote, clause, rule."""
     insurer_ok = bool(reason.get("insurer_words_verified"))
     quote_ok = bool(verdict.get("quote_verified"))
     clause_claimed = verdict.get("clause")
@@ -112,7 +104,6 @@ def _render_trust_panel(reason: dict, verdict: dict) -> None:
 
 
 def _render_audit_trail(reason: dict, verdict: dict, policy_pages: list[dict]) -> None:
-    """Plain-text receipt of how the verdict was reached."""
     lines = []
     lines.append(f"Extracted reason id={reason.get('id')} category={reason.get('category')}")
     lines.append(f"  insurer_words: {reason.get('insurer_words', '')!r}")

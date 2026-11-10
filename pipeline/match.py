@@ -1,9 +1,4 @@
-"""Section finding + AI Call 2: judge each reason against the uploaded policy.
-
-When the policy fits within FULL_TEXT_CHAR_CAP, the whole policy is sent to the AI
-so it can read every clause. When it does not fit, the policy is chunked and the
-top-ranked chunks are sent instead. Still one AI call either way.
-"""
+"""Section finding + AI Call 2: judge each reason against the uploaded policy."""
 from __future__ import annotations
 
 import re
@@ -13,9 +8,7 @@ from pipeline.extract import Page
 from pipeline.llm import LLMError, ask_json
 from pipeline.verify import apply_verification
 
-# Whole-policy path: about 15k tokens of policy text. Tune only if a demo needs it.
 FULL_TEXT_CHAR_CAP = 60000
-# Chunked fallback (only used when the policy exceeds the cap above).
 TOP_K = 12
 CHUNK_CHARS = 1500
 
@@ -51,7 +44,6 @@ Return JSON only, in this exact shape:
 
 
 def chunk_pages(pages: list[Page]) -> list[dict[str, Any]]:
-    """Split each page into paragraph-sized chunks, keeping the page number."""
     chunks: list[dict[str, Any]] = []
     for page in pages:
         paras = [p.strip() for p in re.split(r"\n\s*\n|\n", page.text) if p.strip()]
@@ -73,7 +65,6 @@ def _score_chunk(text: str, keywords: list[str]) -> int:
 
 
 def pick_chunks(reason: dict[str, Any], chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Top-K chunks by keyword hits for the reason's category plus its plain-English words."""
     words = [w for w in re.findall(r"[a-z]{5,}", reason.get("plain_english", "").lower())]
     keywords = KEYWORDS.get(reason.get("category", "other"), []) + words
     ranked = sorted(chunks, key=lambda c: _score_chunk(c["text"], keywords), reverse=True)
@@ -93,7 +84,6 @@ def _sanitize_clause(value: Any) -> str | None:
 
 
 def _full_policy_block(pages: list[Page]) -> str:
-    """Page-tagged full policy text."""
     return "\n".join(f"[page {p.number}]\n{p.text}" for p in pages)
 
 
@@ -101,32 +91,23 @@ def judge_reasons(
     reasons: list[dict[str, Any]],
     pages: list[Page],
 ) -> list[dict[str, Any]]:
-    """AI Call 2. Returns verdicts with quote verification applied (verify.py).
-
-    The uploaded policy is the only authority. If the whole policy fits within
-    FULL_TEXT_CHAR_CAP, it is sent whole. Otherwise, top-ranked chunks are sent.
-    Raises LLMError if the AI output is unusable.
-    """
+    """AI Call 2. Returns verdicts with quote verification applied (verify.py)."""
     if not reasons:
         return []
 
     full_text = _full_policy_block(pages)
     use_full = len(full_text) <= FULL_TEXT_CHAR_CAP
 
-    if use_full:
-        common_policy = "POLICY (full text):\n" + full_text
-        blocks = []
-        for reason in reasons:
+    blocks = []
+    for reason in reasons:
+        if use_full:
             blocks.append(
                 f"REASON id={reason['id']} category={reason['category']}\n"
                 f"Insurer said: {reason['insurer_words']}\n"
                 f"Plain meaning: {reason['plain_english']}"
             )
-        prompt = common_policy + "\n\n" + "\n\n".join(blocks)
-    else:
-        chunks = chunk_pages(pages)
-        blocks = []
-        for reason in reasons:
+        else:
+            chunks = chunk_pages(pages)
             excerpts = pick_chunks(reason, chunks)
             excerpt_text = "\n".join(f"[page {c['page']}] {c['text']}" for c in excerpts)
             blocks.append(
@@ -135,6 +116,10 @@ def judge_reasons(
                 f"Plain meaning: {reason['plain_english']}\n"
                 f"POLICY EXCERPTS:\n{excerpt_text}"
             )
+
+    if use_full:
+        prompt = "POLICY (full text):\n" + full_text + "\n\n" + "\n\n".join(blocks)
+    else:
         prompt = "\n\n".join(blocks)
 
     data = ask_json(SYSTEM, prompt)
